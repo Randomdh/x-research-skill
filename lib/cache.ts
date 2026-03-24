@@ -4,11 +4,16 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
 import { createHash } from "crypto";
-import type { Tweet } from "./api";
+import { fileURLToPath } from "url";
+import type { Tweet } from "./api.js";
 
-const CACHE_DIR = join(import.meta.dir, "..", "data", "cache");
+// Support both Bun (import.meta.dir) and Node (fileURLToPath)
+const __dirname = typeof import.meta.dir === "string"
+  ? import.meta.dir
+  : dirname(fileURLToPath(import.meta.url));
+const CACHE_DIR = join(__dirname, "..", "data", "cache");
 const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 function ensureDir() {

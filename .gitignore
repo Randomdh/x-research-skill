@@ -1,3 +1,4 @@
 data/cache/*.json
 data/watchlist.json
 node_modules/
+.env

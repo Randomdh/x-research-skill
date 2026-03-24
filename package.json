@@ -1,0 +1,28 @@
+{
+  "name": "x-research",
+  "version": "1.0.0",
+  "description": "X/Twitter research skill for [Claude Code](https://code.claude.com) and [OpenClaw](https://openclaw.ai). Agentic search, thread following, deep-dives, sourced briefings.",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Randomdh/x-research-skill.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/Randomdh/x-research-skill/issues"
+  },
+  "homepage": "https://github.com/Randomdh/x-research-skill#readme",
+  "dependencies": {
+    "dotenv": "^17.2.4",
+    "twitter-api-v2": "^1.29.0"
+  }
+}

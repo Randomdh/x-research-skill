@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import "dotenv/config";
 /**
  * x-search — CLI for X/Twitter research.
  *
@@ -26,15 +27,21 @@
  *   --markdown                 Output as markdown (for research docs)
  */
 
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join } from "path";
-import * as api from "./lib/api";
-import * as cache from "./lib/cache";
-import * as fmt from "./lib/format";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import * as api from "./lib/api.js";
+import * as cache from "./lib/cache.js";
+import * as fmt from "./lib/format.js";
 
-const SKILL_DIR = import.meta.dir;
+// Support both Bun (import.meta.dir) and Node (fileURLToPath)
+const __dirname = typeof (import.meta as any).dir === "string"
+  ? (import.meta as any).dir
+  : dirname(fileURLToPath(import.meta.url));
+const SKILL_DIR = __dirname;
 const WATCHLIST_PATH = join(SKILL_DIR, "data", "watchlist.json");
-const DRAFTS_DIR = join(process.env.HOME!, "clawd", "drafts");
+const HOME = process.env.HOME || process.env.USERPROFILE || ".";
+const DRAFTS_DIR = join(HOME, "clawd", "drafts");
 
 // --- Arg parsing ---
 

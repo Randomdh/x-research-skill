@@ -1,16 +1,38 @@
 /**
  * X API wrapper — search, threads, profiles, single tweets.
- * Uses Bearer token from env: X_BEARER_TOKEN
+ * Supports OAuth 1.0a (via twitter-api-v2) or Bearer token.
  */
 
 import { readFileSync } from "fs";
+import { TwitterApi } from "twitter-api-v2";
 
-const BASE = "https://api.x.com/2";
 const RATE_DELAY_MS = 350; // stay under 450 req/15min
 
-function getToken(): string {
-  // Try env first
-  if (process.env.X_BEARER_TOKEN) return process.env.X_BEARER_TOKEN;
+interface Credentials {
+  type: "bearer" | "oauth1";
+  bearerToken?: string;
+  apiKey?: string;
+  apiSecret?: string;
+  accessToken?: string;
+  accessSecret?: string;
+}
+
+function getCredentials(): Credentials {
+  // Try bearer token first
+  if (process.env.X_BEARER_TOKEN) {
+    return { type: "bearer", bearerToken: process.env.X_BEARER_TOKEN };
+  }
+
+  // Try OAuth 1.0a credentials
+  if (process.env.TWITTER_API_KEY) {
+    return {
+      type: "oauth1",
+      apiKey: process.env.TWITTER_API_KEY,
+      apiSecret: process.env.TWITTER_API_SECRET,
+      accessToken: process.env.TWITTER_ACCESS_TOKEN,
+      accessSecret: process.env.TWITTER_ACCESS_SECRET,
+    };
+  }
 
   // Try global.env
   try {
@@ -18,13 +40,46 @@ function getToken(): string {
       `${process.env.HOME}/.config/env/global.env`,
       "utf-8"
     );
-    const match = envFile.match(/X_BEARER_TOKEN=["']?([^"'\n]+)/);
-    if (match) return match[1];
+
+    const bearerMatch = envFile.match(/X_BEARER_TOKEN=["']?([^"'\n]+)/);
+    if (bearerMatch) {
+      return { type: "bearer", bearerToken: bearerMatch[1] };
+    }
+
+    const apiKey = envFile.match(/TWITTER_API_KEY=["']?([^"'\n]+)/)?.[1];
+    const apiSecret = envFile.match(/TWITTER_API_SECRET=["']?([^"'\n]+)/)?.[1];
+    const accessToken = envFile.match(/TWITTER_ACCESS_TOKEN=["']?([^"'\n]+)/)?.[1];
+    const accessSecret = envFile.match(/TWITTER_ACCESS_SECRET=["']?([^"'\n]+)/)?.[1];
+
+    if (apiKey && apiSecret && accessToken && accessSecret) {
+      return { type: "oauth1", apiKey, apiSecret, accessToken, accessSecret };
+    }
   } catch {}
 
   throw new Error(
-    "X_BEARER_TOKEN not found in env or ~/.config/env/global.env"
+    "X credentials not found. Set X_BEARER_TOKEN or TWITTER_API_KEY/SECRET/ACCESS_TOKEN/ACCESS_SECRET"
   );
+}
+
+let _client: TwitterApi | null = null;
+
+function getClient(): TwitterApi {
+  if (_client) return _client;
+
+  const creds = getCredentials();
+
+  if (creds.type === "bearer") {
+    _client = new TwitterApi(creds.bearerToken!);
+  } else {
+    _client = new TwitterApi({
+      appKey: creds.apiKey!,
+      appSecret: creds.apiSecret!,
+      accessToken: creds.accessToken!,
+      accessSecret: creds.accessSecret!,
+    });
+  }
+
+  return _client;
 }
 
 async function sleep(ms: number) {
@@ -53,24 +108,15 @@ export interface Tweet {
   tweet_url: string;
 }
 
-interface RawResponse {
-  data?: any[];
-  includes?: { users?: any[] };
-  meta?: { next_token?: string; result_count?: number };
-  errors?: any[];
-  title?: string;
-  detail?: string;
-  status?: number;
-}
+function parseTweets(data: any[], includes?: any): Tweet[] {
+  if (!data) return [];
 
-function parseTweets(raw: RawResponse): Tweet[] {
-  if (!raw.data) return [];
   const users: Record<string, any> = {};
-  for (const u of raw.includes?.users || []) {
+  for (const u of includes?.users || []) {
     users[u.id] = u;
   }
 
-  return raw.data.map((t: any) => {
+  return data.map((t: any) => {
     const u = users[t.author_id] || {};
     const m = t.public_metrics || {};
     return {
@@ -103,16 +149,10 @@ function parseTweets(raw: RawResponse): Tweet[] {
   });
 }
 
-const FIELDS =
-  "tweet.fields=created_at,public_metrics,author_id,conversation_id,entities&expansions=author_id&user.fields=username,name,public_metrics";
-
 /**
  * Parse a "since" value into an ISO 8601 timestamp.
- * Accepts: "1h", "2h", "6h", "12h", "1d", "2d", "3d", "7d"
- * Or a raw ISO 8601 string.
  */
-function parseSince(since: string): string | null {
-  // Check for shorthand like "1h", "3h", "1d"
+function parseSince(since: string): Date | undefined {
   const match = since.match(/^(\d+)(m|h|d)$/);
   if (match) {
     const num = parseInt(match[1]);
@@ -121,42 +161,18 @@ function parseSince(since: string): string | null {
       unit === "m" ? num * 60_000 :
       unit === "h" ? num * 3_600_000 :
       num * 86_400_000;
-    const startTime = new Date(Date.now() - ms);
-    return startTime.toISOString();
+    return new Date(Date.now() - ms);
   }
 
-  // Check if it's already ISO 8601
   if (since.includes("T") || since.includes("-")) {
     try {
-      return new Date(since).toISOString();
+      return new Date(since);
     } catch {
-      return null;
+      return undefined;
     }
   }
 
-  return null;
-}
-
-async function apiGet(url: string): Promise<RawResponse> {
-  const token = getToken();
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (res.status === 429) {
-    const reset = res.headers.get("x-rate-limit-reset");
-    const waitSec = reset
-      ? Math.max(parseInt(reset) - Math.floor(Date.now() / 1000), 1)
-      : 60;
-    throw new Error(`Rate limited. Resets in ${waitSec}s`);
-  }
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`X API ${res.status}: ${body.slice(0, 200)}`);
-  }
-
-  return res.json();
+  return undefined;
 }
 
 /**
@@ -168,39 +184,50 @@ export async function search(
     maxResults?: number;
     pages?: number;
     sortOrder?: "relevancy" | "recency";
-    since?: string; // ISO 8601 timestamp or shorthand like "1h", "3h", "1d"
+    since?: string;
   } = {}
 ): Promise<Tweet[]> {
+  const client = getClient();
   const maxResults = Math.max(Math.min(opts.maxResults || 100, 100), 10);
   const pages = opts.pages || 1;
   const sort = opts.sortOrder || "relevancy";
-  const encoded = encodeURIComponent(query);
 
-  // Build time filter
-  let timeFilter = "";
+  const searchOpts: any = {
+    max_results: maxResults,
+    "tweet.fields": ["created_at", "public_metrics", "author_id", "conversation_id", "entities"],
+    expansions: ["author_id"],
+    "user.fields": ["username", "name", "public_metrics"],
+    sort_order: sort,
+  };
+
   if (opts.since) {
     const startTime = parseSince(opts.since);
     if (startTime) {
-      timeFilter = `&start_time=${startTime}`;
+      searchOpts.start_time = startTime.toISOString();
     }
   }
 
   let allTweets: Tweet[] = [];
-  let nextToken: string | undefined;
 
-  for (let page = 0; page < pages; page++) {
-    const pagination = nextToken
-      ? `&pagination_token=${nextToken}`
-      : "";
-    const url = `${BASE}/tweets/search/recent?query=${encoded}&max_results=${maxResults}&${FIELDS}&sort_order=${sort}${timeFilter}${pagination}`;
+  try {
+    const paginator = await client.v2.search(query, searchOpts);
+    let pageCount = 0;
 
-    const raw = await apiGet(url);
-    const tweets = parseTweets(raw);
-    allTweets.push(...tweets);
-
-    nextToken = raw.meta?.next_token;
-    if (!nextToken) break;
-    if (page < pages - 1) await sleep(RATE_DELAY_MS);
+    for await (const tweet of paginator) {
+      // Build tweet list from paginator
+      const data = paginator.data?.data || [];
+      const includes = paginator.data?.includes;
+      allTweets = parseTweets(data, includes);
+      pageCount++;
+      if (pageCount >= pages) break;
+      await sleep(RATE_DELAY_MS);
+    }
+  } catch (err: any) {
+    // Fallback: try direct fetch
+    const results = await client.v2.search(query, searchOpts);
+    const data = results.data?.data || results.data || [];
+    const includes = results.includes;
+    allTweets = parseTweets(Array.isArray(data) ? data : [data], includes);
   }
 
   return allTweets;
@@ -221,15 +248,9 @@ export async function thread(
 
   // Also fetch the root tweet
   try {
-    const rootUrl = `${BASE}/tweets/${conversationId}?${FIELDS}`;
-    const raw = await apiGet(rootUrl);
-    const rootTweets = parseTweets({ ...raw, data: raw.data ? [raw.data] : (raw as any).id ? [raw] : [] });
-    // Fix: single tweet lookup returns tweet at top level
-    if ((raw as any).id) {
-      // raw is the tweet itself — need to re-fetch with proper structure
-    }
-    if (rootTweets.length > 0) {
-      tweets.unshift(...rootTweets);
+    const root = await getTweet(conversationId);
+    if (root) {
+      tweets.unshift(root);
     }
   } catch {
     // Root tweet might be deleted
@@ -245,18 +266,20 @@ export async function profile(
   username: string,
   opts: { count?: number; includeReplies?: boolean } = {}
 ): Promise<{ user: any; tweets: Tweet[] }> {
-  // First, look up user ID
-  const userUrl = `${BASE}/users/by/username/${username}?user.fields=public_metrics,description,created_at`;
-  const userData = await apiGet(userUrl);
-  
-  if (!userData.data) {
+  const client = getClient();
+
+  // Look up user
+  const userResult = await client.v2.userByUsername(username, {
+    "user.fields": ["public_metrics", "description", "created_at"],
+  });
+
+  if (!userResult.data) {
     throw new Error(`User @${username} not found`);
   }
 
-  const user = (userData as any).data;
   await sleep(RATE_DELAY_MS);
 
-  // Build search query
+  // Search for their tweets
   const replyFilter = opts.includeReplies ? "" : " -is:reply";
   const query = `from:${username} -is:retweet${replyFilter}`;
   const tweets = await search(query, {
@@ -264,22 +287,29 @@ export async function profile(
     sortOrder: "recency",
   });
 
-  return { user, tweets };
+  return { user: userResult.data, tweets };
 }
 
 /**
  * Fetch a single tweet by ID.
  */
 export async function getTweet(tweetId: string): Promise<Tweet | null> {
-  const url = `${BASE}/tweets/${tweetId}?${FIELDS}`;
-  const raw = await apiGet(url);
+  const client = getClient();
 
-  // Single tweet returns { data: {...}, includes: {...} }
-  if (raw.data && !Array.isArray(raw.data)) {
-    const parsed = parseTweets({ ...raw, data: [raw.data] });
+  try {
+    const result = await client.v2.singleTweet(tweetId, {
+      "tweet.fields": ["created_at", "public_metrics", "author_id", "conversation_id", "entities"],
+      expansions: ["author_id"],
+      "user.fields": ["username", "name", "public_metrics"],
+    });
+
+    if (!result.data) return null;
+
+    const parsed = parseTweets([result.data], result.includes);
     return parsed[0] || null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 /**
